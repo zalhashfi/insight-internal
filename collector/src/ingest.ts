@@ -41,6 +41,13 @@ export type IngestPayload = {
   arch?: string;
   install_id?: string;
   channel?: string;
+  /**
+   * Server-side receipt time, in epoch milliseconds. NOT client-supplied: the
+   * allow-list excludes any `ts` key on the wire, and the store stamps it on
+   * `record` (so day buckets are anchored to server time, never a device
+   * clock). Optional in the type so pure parse tests can build a bare payload.
+   */
+  ts?: number;
 };
 
 /** Aggregate totals kept by the store. Carries no IP, by construction. */
@@ -91,6 +98,16 @@ export class InMemoryStatsStore implements StatsStore {
   #agg: Aggregate = emptyAggregate();
   #seen = new Set<string>();
   #recorded: IngestPayload[] = [];
+  readonly #now: () => number;
+
+  /**
+   * `now` is an injected clock (defaults to `Date.now`) so callers and tests
+   * can pin the server-side receipt time stamped on each recorded payload —
+   * the source of `GET /stats`' per-day/active aggregates — without waiting.
+   */
+  constructor(now: () => number = Date.now) {
+    this.#now = now;
+  }
 
   record(payload: IngestPayload): void {
     this.#agg.total += 1;
@@ -110,8 +127,10 @@ export class InMemoryStatsStore implements StatsStore {
       this.#agg.uniqueInstalls = this.#seen.size;
     }
 
-    // Store a fresh copy so callers can never smuggle extra keys in.
-    this.#recorded.push({ ...payload });
+    // Store a fresh copy so callers can never smuggle extra keys in. `ts` is
+    // stamped HERE (server clock), overwriting anything a caller passed — a
+    // payload's day bucket can never be chosen by the device.
+    this.#recorded.push({ ...payload, ts: this.#now() });
   }
 
   aggregate(): Aggregate {
