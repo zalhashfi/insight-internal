@@ -18,6 +18,7 @@ import { describe, expect, test } from "bun:test";
 import {
   CONTROL_WS_PATH,
   DEFAULT_DEVICE_KEY,
+  DEFAULT_FIRMWARE,
   DEVICE_HEADER,
   MAX_DEVICE_KEY_LENGTH,
   TELEMETRY_PATH,
@@ -273,6 +274,25 @@ describe("sensors — reading shapes", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("validatePublishRequest — pre-flight boundaries", () => {
+  test("accepts a key exactly at the server's 128-character limit", () => {
+    // The server contract is 128 (worker/src/domains/telemetry/telemetry.ts and
+    // test/contracts/contract-lock.ts); the simulator must mirror it exactly.
+    expect(MAX_DEVICE_KEY_LENGTH).toBe(128);
+
+    const key128 = "d".repeat(128);
+    expect(key128).toHaveLength(128);
+    expect(validatePublishRequest([{ metrics: { temp: 1 } }], key128)).toEqual({ ok: true });
+  });
+
+  test("rejects a 129-character key as one past the limit", () => {
+    const key129 = "d".repeat(129);
+    expect(key129).toHaveLength(MAX_DEVICE_KEY_LENGTH + 1);
+    expect(validatePublishRequest([{ metrics: {} }], key129)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_device_key" },
+    });
+  });
+
   test("accepts a non-empty batch with a key exactly at the length limit", () => {
     expect(validatePublishRequest([{ metrics: { temp: 1 } }], "d".repeat(MAX_DEVICE_KEY_LENGTH))).toEqual({ ok: true });
   });
@@ -384,8 +404,20 @@ describe("publishOnce — uplink", () => {
     expect(result.body).toEqual({ stored: 1 });
   });
 
-  test("validates the device header against the server's field limits", async () => {
-    const tooLong = "d".repeat(65); // one past MAX_DEVICE_KEY_LENGTH (64)
+  test("accepts a 128-char device key and transmits it intact", async () => {
+    const key128 = "d".repeat(128);
+    const fetchImpl = makeFetchSpy(() => fakeResponse(204));
+    const sim = createSimulator({ baseUrl: BASE_URL, projectToken: TOKEN, deviceKey: key128, fetchImpl });
+
+    const result = await sim.publishOnce([{ metrics: { temp: 26 } }]);
+
+    expect(result.ok).toBe(true);
+    expect(fetchImpl.calls).toHaveLength(1);
+    expect(fetchImpl.calls[0].headers[DEVICE_HEADER]).toBe(key128);
+  });
+
+  test("rejects a 129-char device key before any request is made", async () => {
+    const tooLong = "d".repeat(129); // one past MAX_DEVICE_KEY_LENGTH (128)
     const fetchImpl = makeFetchSpy(() => fakeResponse(204));
     const sim = createSimulator({ baseUrl: BASE_URL, projectToken: TOKEN, deviceKey: tooLong, fetchImpl });
 
@@ -494,13 +526,21 @@ describe("control channel — injected WS factory", () => {
     const wsFactory = makeWsRecorder();
     const sim = createSimulator({ baseUrl: BASE_URL, projectToken: TOKEN, deviceKey: DEVICE, wsFactory });
 
+    expect(sim.controlSocket).toBeNull(); // no socket until connectControl runs
     const socket = sim.connectControl();
 
     expect(wsFactory.instances).toHaveLength(1);
     expect(socket.url).toBe(`ws://collector.local${CONTROL_WS_PATH}`);
     expect(socket.readyState).toBe(1);
     expect(socket.sent).toHaveLength(1);
-    expect(JSON.parse(socket.sent[0])).toEqual({ type: "hello", device: DEVICE, chip: "sim", firmware: "iot-sim-0.1.0" });
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      type: "hello",
+      device: DEVICE,
+      chip: "sim",
+      firmware: DEFAULT_FIRMWARE,
+    });
+    // The same socket is exposed on the simulator for later inspection/reuse.
+    expect(sim.controlSocket).toBe(socket);
   });
 
   test("the hello frame is sent when the socket opens later", () => {

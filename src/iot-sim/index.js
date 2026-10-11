@@ -41,12 +41,15 @@ export const DEFAULT_DEVICE_KEY = "sim-01";
 
 /**
  * Longest device key the server will persist. Mirrors the ingest route's own
- * defensive clamp on the attacker-controlled `x-insight-device` header
- * (`worker/src/domains/telemetry/telemetry.ts`). The simulator checks this
- * *before* transmitting, so a too-long key fails locally instead of being
- * silently truncated on arrival.
+ * length limit on the attacker-controlled `x-insight-device` header:
+ * `MAX_DEVICE_KEY_LENGTH = 128` in `worker/src/domains/telemetry/telemetry.ts`,
+ * re-exported for the contract suite as `MAX_DEVICE_KEY_LENGTH` in
+ * `test/contracts/contract-lock.ts`. The server *clamps* a longer header
+ * (`normaliseDevice` truncates it to 128 characters); the simulator instead
+ * checks this *before* transmitting, so a caller learns the key cannot round-trip
+ * intact rather than having it silently truncated on arrival.
  */
-export const MAX_DEVICE_KEY_LENGTH = 64;
+export const MAX_DEVICE_KEY_LENGTH = 128;
 
 /** Default firmware string announced in the WS `hello` frame. */
 export const DEFAULT_FIRMWARE = "iot-sim-0.1.0";
@@ -125,15 +128,16 @@ export function toWebSocketUrl(url) {
  *   reading generator.
  * @property {Map<string, unknown>} commands Newest command value per variable.
  * @property {string} deviceKey Device identity sent as {@link DEVICE_HEADER}.
- * @property {unknown} controlSocket The connected control socket, if any.
+ * @property {unknown} controlSocket The connected control socket, if any;
+ *   `null` until {@link Simulator#connectControl} is called.
+ * @property {unknown} controller The controller actuator, or `null` when the
+ *   controller sensor is disabled. Commands are applied here.
  * @property {(readings?: unknown) => PublishRequest} publishRequest Build the
  *   request without sending it.
  * @property {(batch?: Array<{ metrics: object }>) => Promise<PublishResult>} publishOnce
  *   Send one batch to `POST /v1/telemetry`.
  * @property {(handlers?: object) => unknown} connectControl Open the WS control
- *   channel through the injected factory.
- * @property {(handlers?: object) => unknown} createWebSocket Alias kept public
- *   for callers that want to own the socket's handlers.
+ *   channel through the injected factory and return the socket.
  * @property {(message: unknown) => Array<object>} handleControlMessage Decode a
  *   control frame and apply its commands.
  */
@@ -410,10 +414,10 @@ export function createSimulator({
     /**
      * Open the WS control channel via the injected factory.
      *
-     * Inert before this point: no socket exists until `connectControl()` (or an
-     * explicit {@link Simulator#createWebSocket}) is called. The factory is
-     * called with the primaries first and `http(s)`-spelled fallbacks after, so
-     * a URL-aware fake can register whichever it prefers.
+     * Inert before this point: no socket exists until `connectControl()` is
+     * called. The factory is called with the primaries first and
+     * `http(s)`-spelled fallbacks after, so a URL-aware fake can register
+     * whichever it prefers.
      *
      * @param {{ onMessage?: (data: unknown, socket: unknown) => void, onOpen?: Function, onClose?: Function, onError?: Function, protocol?: string|string[] }} [handlers]
      * @returns {unknown} Whatever the factory returned (a `WebSocketLike`).
@@ -465,17 +469,8 @@ export function createSimulator({
         }
       }
 
-      simulator.socket = socket;
       simulator.controlSocket = socket;
       return socket;
-    },
-
-    /**
-     * Create (but do not use) a control-channel socket. Kept public so a caller
-     * can hand the factory its own handlers and still exercise the same URL.
-     */
-    createWebSocket(handlers) {
-      return simulator.connectControl(handlers);
     },
 
     /**
@@ -503,6 +498,9 @@ export function createSimulator({
 
     /** Commands received so far, newest value per variable. */
     commands: new Map(),
+
+    /** The control socket once connected; `null` while no channel is open. */
+    controlSocket: null,
 
     /** Default device key used when the server sees no `x-insight-device`. */
     deviceKey,

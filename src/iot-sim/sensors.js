@@ -109,7 +109,8 @@ function clamp(value, lo, hi) {
  * A 1-D random walk whose result is rounded to fixed precision.
  *
  * `state` is a plain number, which is what lets a reading be dropped straight
- * into JSON without a custom serializer.
+ * into JSON without a custom serializer. Internal to this module: it is the
+ * shared engine behind the temperature walk, not part of the sensor API.
  *
  * @param {object} [opts]
  * @param {number} [opts.initial=0]     Starting value.
@@ -118,7 +119,7 @@ function clamp(value, lo, hi) {
  * @param {number} [opts.step=1]        Magnitude of one full step.
  * @param {number} [opts.digits=2]      Decimals kept on `value`.
  */
-export function createRandomWalk({ initial = 0, min = -Infinity, max = Infinity, step: stepSize = 1, digits = 2 } = {}) {
+function createRandomWalk({ initial = 0, min = -Infinity, max = Infinity, step: stepSize = 1, digits = 2 } = {}) {
   if (!Number.isFinite(initial)) throw new TypeError("initial must be finite");
   if (!Number.isFinite(stepSize) || stepSize <= 0) throw new TypeError("step must be > 0");
   // A walk with an inverted or empty window cannot move without leaving bounds.
@@ -316,7 +317,8 @@ export function createGpsSensor({ lat = 0, lon = 0, stepMeters = 15, reversion =
  * Wired to the control channel: `set()` is what the simulator calls when a
  * command arrives over `GET /v1/control` or the WS control channel. The level
  * is clamped to `[min, max]` so an out-of-range command cannot corrupt the
- * emitted telemetry.
+ * emitted telemetry. Internal to this module: it is reachable through
+ * {@link createSensors} as the generator's `controller`, not re-exported.
  *
  * @param {object} [opts]
  * @param {number} [opts.initial=0] Start level.
@@ -325,7 +327,7 @@ export function createGpsSensor({ lat = 0, lon = 0, stepMeters = 15, reversion =
  * @param {number} [opts.step=5]    One-step magnitude while free-running.
  * @param {string} [opts.key="duty"] Variable name in the emitted metrics.
  */
-export function createControllerSensor({ initial = 0, min = 0, max = 100, step: stepSize = 5, key = "duty" } = {}) {
+function createControllerSensor({ initial = 0, min = 0, max = 100, step: stepSize = 5, key = "duty" } = {}) {
   if (!(min < max)) throw new TypeError("requires min < max");
   let current = Math.round(clamp(initial, min, max));
 
@@ -429,9 +431,3 @@ export function createSensors({ seed = 1, sensors = {}, extra } = {}) {
 export function readings(batch = 1, opts) {
   return createSensors(opts)(batch);
 }
-
-/**
- * Default metric vocabulary, exported so the simulator (and its tests) can
- * assert against names rather than repeat string literals.
- */
-export const DEFAULT_METRIC_KEYS = Object.freeze(["temp", "ok", "lat", "lon", "duty"]);
